@@ -1,0 +1,9 @@
+Initial commit
+
+Created dual syndication schedule - start at the begginning and work your way forward, or start with the latest and work backward with scheduled injections of the newest episodes on release.
+
+Auto download 1 episode from each podcast upon tapping a Syndicated button. This covers long trips which may include dead spots.
+
+The play button saves current episode play status, and your subscriptions and played episode states are all saved every 15 minutes. Manual buttons provided for migration to new devices.
+
+No ads, telemetry, IAPs, or begging for cash. This app is a tool, it does its job and stays the f*%& out of the way.
