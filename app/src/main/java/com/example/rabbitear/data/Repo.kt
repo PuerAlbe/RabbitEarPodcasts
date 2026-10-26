@@ -2,6 +2,8 @@ package com.example.rabbitear.data
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.room.Room
@@ -69,7 +71,7 @@ class Repo(private val ctx: Context) {
 
     // ---------- the syndication schedule ----------
     fun mode(): Mode? = prefs.getString("mode", null)?.let { Mode.valueOf(it) }
-    fun setMode(m: Mode?) = prefs.edit().apply { if (m == null) remove("mode") else putString("mode", m.name) }.apply()
+    fun setMode(m: Mode?) = prefs.edit { if (m == null) remove("mode") else putString("mode", m.name) }
     fun currentGuid(): String? {
         val m = mode()
         return if (m != null) {
@@ -94,11 +96,11 @@ class Repo(private val ctx: Context) {
             val s = subs[(startIdx + i) % subs.size]
             val ep = if (m == Mode.OLDEST) dao.oldestUnplayed(s.feedUrl) else dao.newestUnplayed(s.feedUrl)
             if (ep != null) {
-                prefs.edit()
-                    .putString(lastShowKey, s.feedUrl)
-                    .putString(currentKey, ep.guid)
-                    .putString("current", ep.guid)
-                    .apply()
+                prefs.edit {
+                    putString(lastShowKey, s.feedUrl)
+                    putString(currentKey, ep.guid)
+                    putString("current", ep.guid)
+                }
                 return ep
             }
         }
@@ -140,11 +142,11 @@ class Repo(private val ctx: Context) {
     // ---------- playback helpers ----------
     suspend fun item(e: Episode): MediaItem {
         val show = dao.podcast(e.podcastUrl)
-        val uri = e.localPath?.takeIf { File(it).exists() }?.let { Uri.fromFile(File(it)) } ?: Uri.parse(e.audioUrl)
+        val uri = e.localPath?.takeIf { File(it).exists() }?.let { Uri.fromFile(File(it)) } ?: e.audioUrl.toUri()
         val artworkUri = e.image?.takeIf { it.isNotEmpty() } ?: show?.image?.takeIf { it.isNotEmpty() }
         return MediaItem.Builder().setMediaId(e.guid).setUri(uri).setMediaMetadata(
             MediaMetadata.Builder().setTitle(e.title).setArtist(show?.title ?: "")
-                .setArtworkUri(artworkUri?.let { Uri.parse(it) }).build()
+                .setArtworkUri(artworkUri?.toUri()).build()
         ).build()
     }
     suspend fun saveProgress(guid: String, pos: Long, dur: Long) = dao.progress(guid, pos, dur)

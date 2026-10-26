@@ -1,6 +1,7 @@
 package com.example.rabbitear.ui
 
 import android.net.Uri
+import androidx.core.net.toUri
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -689,7 +690,7 @@ fun SettingsScreen(vm: VM, back: () -> Unit) {
                     try {
                         val intent = android.content.Intent(
                             android.content.Intent.ACTION_VIEW,
-                            Uri.parse("https://ko-fi.com/pueralbe")
+                            "https://ko-fi.com/pueralbe".toUri()
                         )
                         context.startActivity(intent)
                     } catch (_: Exception) {}
