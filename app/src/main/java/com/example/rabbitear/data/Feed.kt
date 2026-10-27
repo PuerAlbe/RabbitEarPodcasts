@@ -25,16 +25,19 @@ fun parseFeed(feedUrl: String, input: InputStream): Pair<Podcast, List<Episode>>
     var title = ""; var author = ""; var image = ""
     val eps = mutableListOf<Episode>()
     var inItem = false
-    var t = ""; var u = ""; var g = ""; var d = 0L; var dur = 0L; var epImg: String? = null
+    var t = ""; var u = ""; var g = ""; var d = 0L; var dur = 0L; var epImg: String? = null; var desc = ""
     var ev = p.eventType
     while (ev != XmlPullParser.END_DOCUMENT) {
         if (ev == XmlPullParser.START_TAG) {
             when (p.name) {
-                "item" -> { inItem = true; t = ""; u = ""; g = ""; d = 0L; dur = 0L; epImg = null }
+                "item" -> { inItem = true; t = ""; u = ""; g = ""; d = 0L; dur = 0L; epImg = null; desc = "" }
                 "title" -> { val x = p.nextText().trim(); if (inItem) t = x else if (title.isEmpty()) title = x }
                 "enclosure" -> if (inItem) u = p.getAttributeValue(null, "url") ?: ""
                 "guid" -> if (inItem) g = p.nextText().trim()
                 "pubDate" -> if (inItem) d = parseDate(p.nextText())
+                "description", "itunes:summary", "content:encoded" -> {
+                    if (inItem && desc.isEmpty()) desc = p.nextText().trim()
+                }
                 "itunes:duration" -> if (inItem) dur = parseDur(p.nextText())
                 "itunes:author" -> if (!inItem && author.isEmpty()) author = p.nextText().trim()
                 "itunes:image" -> {
@@ -45,7 +48,7 @@ fun parseFeed(feedUrl: String, input: InputStream): Pair<Podcast, List<Episode>>
             }
         } else if (ev == XmlPullParser.END_TAG && p.name == "item") {
             inItem = false
-            if (u.isNotEmpty()) eps += Episode("$feedUrl#${g.ifEmpty { u }}", feedUrl, t.ifEmpty { "Untitled" }, u, d, dur, image = epImg)
+            if (u.isNotEmpty()) eps += Episode("$feedUrl#${g.ifEmpty { u }}", feedUrl, t.ifEmpty { "Untitled" }, u, d, dur, image = epImg, description = desc.ifEmpty { null })
         }
         ev = p.next()
     }

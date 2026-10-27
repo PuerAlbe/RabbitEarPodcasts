@@ -6,7 +6,9 @@ import androidx.work.*
 import com.example.rabbitear.data.Repo
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 
@@ -15,9 +17,13 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         repo = Repo(this)
+        CoroutineScope(Dispatchers.IO).launch {
+            repo.autoRestoreIfNeeded(this@App)
+        }
+        val hours = repo.refreshIntervalHours()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             "refresh", ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<RefreshWorker>(3, TimeUnit.HOURS)
+            PeriodicWorkRequestBuilder<RefreshWorker>(hours.toLong(), TimeUnit.HOURS)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
         )
     }

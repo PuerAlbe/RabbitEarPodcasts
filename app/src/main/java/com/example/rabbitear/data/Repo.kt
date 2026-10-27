@@ -9,6 +9,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.room.Room
 import androidx.work.*
 import com.example.rabbitear.DownloadWorker
+import com.example.rabbitear.RefreshWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -16,12 +17,27 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import android.os.Environment
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 enum class Mode { OLDEST, NEWEST }
 
+data class StateToRestore(
+    val guid: String,
+    val podcastUrl: String,
+    val audioUrl: String,
+    val played: Boolean,
+    val positionMs: Long,
+    val durationMs: Long,
+    val favorite: Boolean,
+    val inSlate: Boolean = false,
+    val slateAddedTime: Long = 0L
+)
+
 class Repo(private val ctx: Context) {
     val dao = Room.databaseBuilder(ctx, Db::class.java, "rabbitear.db")
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
         .fallbackToDestructiveMigration()
         .build().dao()
     val http = OkHttpClient()
@@ -108,7 +124,7 @@ class Repo(private val ctx: Context) {
     }
 
     /** Resumes a half-finished scheduled episode if there is one for this specific mode, otherwise takes the next in rotation.
-     * Also triggers downloads for the next unplayed episode of every subscription. */
+     * Also triggers downloads for the next 6 unplayed episodes in rotation. */
     suspend fun startSchedule(m: Mode): Episode? {
         setMode(m)
         val currentKey = "current_${m.name}"
@@ -119,14 +135,61 @@ class Repo(private val ctx: Context) {
         return epToPlay
     }
 
-    suspend fun triggerSyndicatedDownloads(m: Mode) = withContext(Dispatchers.IO) {
+    suspend fun peekNextScheduledRotation(m: Mode, count: Int = 6): List<Episode> {
         val subs = dao.subscriptionsNow()
-        for (s in subs) {
-            val ep = if (m == Mode.OLDEST) dao.oldestUnplayed(s.feedUrl) else dao.newestUnplayed(s.feedUrl)
-            if (ep != null && ep.localPath == null) {
+        if (subs.isEmpty() || count <= 0) return emptyList()
+
+        val lastShowKey = "lastShow_${m.name}"
+        val lastShowVal = prefs.getString(lastShowKey, null)
+        val startIdx = if (lastShowVal != null) {
+            val idx = subs.indexOfFirst { it.feedUrl == lastShowVal }
+            if (idx >= 0) idx else 0
+        } else 0
+
+        val result = mutableListOf<Episode>()
+        val offsetMap = mutableMapOf<String, Int>()
+
+        var attempts = 0
+        val maxAttempts = subs.size * 50
+
+        var currentSubIdx = startIdx
+        while (result.size < count && attempts < maxAttempts) {
+            attempts++
+            val s = subs[currentSubIdx % subs.size]
+            val offset = offsetMap.getOrDefault(s.feedUrl, 0)
+
+            val ep = if (m == Mode.OLDEST) {
+                dao.oldestUnplayedWithOffset(s.feedUrl, offset)
+            } else {
+                dao.newestUnplayedWithOffset(s.feedUrl, offset)
+            }
+
+            if (ep != null) {
+                result.add(ep)
+                offsetMap[s.feedUrl] = offset + 1
+            }
+
+            currentSubIdx++
+        }
+
+        return result
+    }
+
+    suspend fun triggerSyndicatedDownloads(m: Mode) = withContext(Dispatchers.IO) {
+        val next6 = peekNextScheduledRotation(m, 6)
+        for (ep in next6) {
+            if (ep.localPath == null) {
                 enqueueDownload(ep.guid, bySyndication = true)
             }
         }
+    }
+
+    suspend fun getLatestEpisodesForSubscriptions(): List<Pair<Podcast, Episode>> = withContext(Dispatchers.IO) {
+        val subs = dao.subscriptionsNow()
+        subs.mapNotNull { p ->
+            val ep = dao.newestEpisode(p.feedUrl)
+            if (ep != null) p to ep else null
+        }.sortedByDescending { it.second.pubDate }
     }
 
     fun enqueueDownload(guid: String, bySyndication: Boolean) {
@@ -134,6 +197,31 @@ class Repo(private val ctx: Context) {
             "dl-$guid", ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<DownloadWorker>()
                 .setInputData(workDataOf("guid" to guid, "bySyndication" to bySyndication))
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+        )
+    }
+
+    // ---------- check for new episodes setting ----------
+    fun refreshIntervalHours(): Int = prefs.getInt("refreshIntervalHours", 24)
+
+    fun setRefreshIntervalHours(h: Int) {
+        val bounded = h.coerceIn(1, 720)
+        prefs.edit { putInt("refreshIntervalHours", bounded) }
+    }
+
+    fun sleepTimerMinutes(): Int = prefs.getInt("sleepTimerMinutes", 20)
+
+    fun setSleepTimerMinutes(minutes: Int) {
+        val bounded = minutes.coerceIn(0, 60)
+        prefs.edit { putInt("sleepTimerMinutes", bounded) }
+    }
+
+    fun updateRefreshSchedule(ctx: Context, hours: Int) {
+        WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
+            "refresh",
+            ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
+            PeriodicWorkRequestBuilder<RefreshWorker>(hours.toLong(), TimeUnit.HOURS)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
         )
@@ -154,23 +242,48 @@ class Repo(private val ctx: Context) {
     suspend fun finish(guid: String) {
         val ep = dao.episode(guid)
         dao.setPlayed(guid, true)
+        dao.setInSlate(guid, false)
         if (ep != null && ep.downloadedBySyndication && ep.localPath != null) {
             deleteDownload(ep)
+        } else {
+            mode()?.let { triggerSyndicatedDownloads(it) }
         }
     }
 
     suspend fun deleteDownload(e: Episode) {
         e.localPath?.let { File(it).delete() }
         dao.setLocal(e.guid, null, false)
+        mode()?.let { triggerSyndicatedDownloads(it) }
+    }
+
+    fun getSettingsFile(c: Context = ctx): File {
+        val docsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+        if (!docsDir.exists()) {
+            try { docsDir.mkdirs() } catch (_: Exception) {}
+        }
+        val targetDir = if (docsDir.exists() && docsDir.canWrite()) docsDir else c.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: c.filesDir
+        return File(targetDir, "rabbitear_settings.json")
+    }
+
+    suspend fun autoRestoreIfNeeded(c: Context = ctx) = withContext(Dispatchers.IO) {
+        try {
+            val subs = dao.subscriptionsNow()
+            if (subs.isEmpty()) {
+                val file = getSettingsFile(c)
+                if (file.exists() && file.length() > 0) {
+                    file.inputStream().use { importSettings(it) }
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     // ---------- export & import settings ----------
     suspend fun exportSettings(out: java.io.OutputStream) = withContext(Dispatchers.IO) {
         val subs = dao.subscriptionsNow()
-        val played = dao.playedEpisodesNow()
+        val episodeStates = dao.allEpisodeStatesNow()
 
         val json = JSONObject()
-        json.put("version", 1)
+        json.put("version", 3)
 
         val subsArr = JSONArray()
         subs.forEach { p ->
@@ -184,8 +297,27 @@ class Repo(private val ctx: Context) {
         }
         json.put("subscriptions", subsArr)
 
+        val statesArr = JSONArray()
+        episodeStates.forEach { e ->
+            val obj = JSONObject().apply {
+                put("guid", e.guid)
+                put("podcastUrl", e.podcastUrl)
+                put("audioUrl", e.audioUrl)
+                put("title", e.title)
+                put("played", e.played)
+                put("positionMs", e.positionMs)
+                put("durationMs", e.durationMs)
+                put("favorite", e.favorite)
+                put("inSlate", e.inSlate)
+                put("slateAddedTime", e.slateAddedTime)
+            }
+            statesArr.put(obj)
+        }
+        json.put("episodeStates", statesArr)
+
+        // Legacy compatibility keys
         val playedArr = JSONArray()
-        played.forEach { e ->
+        episodeStates.filter { it.played || it.positionMs > 0 }.forEach { e ->
             val obj = JSONObject().apply {
                 put("guid", e.guid)
                 put("podcastUrl", e.podcastUrl)
@@ -196,16 +328,39 @@ class Repo(private val ctx: Context) {
         }
         json.put("playedEpisodes", playedArr)
 
+        val favArr = JSONArray()
+        episodeStates.filter { it.favorite }.forEach { e ->
+            val obj = JSONObject().apply {
+                put("guid", e.guid)
+                put("podcastUrl", e.podcastUrl)
+                put("favorite", e.favorite)
+            }
+            favArr.put(obj)
+        }
+        json.put("favoriteEpisodes", favArr)
+
+        val slateArr = JSONArray()
+        episodeStates.filter { it.inSlate }.forEach { e ->
+            val obj = JSONObject().apply {
+                put("guid", e.guid)
+                put("podcastUrl", e.podcastUrl)
+                put("inSlate", e.inSlate)
+                put("slateAddedTime", e.slateAddedTime)
+            }
+            slateArr.put(obj)
+        }
+        json.put("slateEpisodes", slateArr)
+
         out.use { it.write(json.toString(2).toByteArray(Charsets.UTF_8)) }
     }
 
     suspend fun importSettings(input: java.io.InputStream): Pair<Int, Int> = withContext(Dispatchers.IO) {
         val content = input.use { it.bufferedReader(Charsets.UTF_8).readText() }
         var importedSubs = 0
-        var importedPlayed = 0
+        var importedStates = 0
 
         val urls = mutableSetOf<String>()
-        val playedGuids = mutableMapOf<String, Boolean>()
+        val statesToRestore = mutableListOf<StateToRestore>()
 
         try {
             if (content.trim().startsWith("{")) {
@@ -220,17 +375,79 @@ class Repo(private val ctx: Context) {
                     }
                 }
 
-                val playedArr = json.optJSONArray("playedEpisodes")
-                if (playedArr != null) {
-                    for (i in 0 until playedArr.length()) {
-                        val obj = playedArr.optJSONObject(i) ?: continue
+                val statesArr = json.optJSONArray("episodeStates")
+                if (statesArr != null) {
+                    for (i in 0 until statesArr.length()) {
+                        val obj = statesArr.optJSONObject(i) ?: continue
                         val guid = obj.optString("guid")
                         val pUrl = obj.optString("podcastUrl")
-                        val isPlayed = obj.optBoolean("played", true)
-                        if (guid.isNotEmpty()) {
-                            playedGuids[guid] = isPlayed
+                        val audioUrl = obj.optString("audioUrl")
+                        val played = obj.optBoolean("played", false)
+                        val pos = obj.optLong("positionMs", 0L)
+                        val dur = obj.optLong("durationMs", 0L)
+                        val fav = obj.optBoolean("favorite", false)
+                        val inSlate = obj.optBoolean("inSlate", false)
+                        val slateTime = obj.optLong("slateAddedTime", 0L)
+                        if (guid.isNotEmpty() || audioUrl.isNotEmpty()) {
+                            statesToRestore.add(StateToRestore(guid, pUrl, audioUrl, played, pos, dur, fav, inSlate, slateTime))
                             if (pUrl.isNotEmpty()) urls.add(pUrl)
                         }
+                    }
+                } else {
+                    // Legacy format fallbacks
+                    val playedMap = mutableMapOf<String, Pair<Boolean, Long>>()
+                    val playedArr = json.optJSONArray("playedEpisodes")
+                    if (playedArr != null) {
+                        for (i in 0 until playedArr.length()) {
+                            val obj = playedArr.optJSONObject(i) ?: continue
+                            val guid = obj.optString("guid")
+                            val pUrl = obj.optString("podcastUrl")
+                            val isPlayed = obj.optBoolean("played", true)
+                            val pos = obj.optLong("positionMs", 0L)
+                            if (guid.isNotEmpty()) {
+                                playedMap[guid] = isPlayed to pos
+                                if (pUrl.isNotEmpty()) urls.add(pUrl)
+                            }
+                        }
+                    }
+
+                    val favMap = mutableMapOf<String, Boolean>()
+                    val favArr = json.optJSONArray("favoriteEpisodes")
+                    if (favArr != null) {
+                        for (i in 0 until favArr.length()) {
+                            val obj = favArr.optJSONObject(i) ?: continue
+                            val guid = obj.optString("guid")
+                            val pUrl = obj.optString("podcastUrl")
+                            val isFav = obj.optBoolean("favorite", true)
+                            if (guid.isNotEmpty()) {
+                                favMap[guid] = isFav
+                                if (pUrl.isNotEmpty()) urls.add(pUrl)
+                            }
+                        }
+                    }
+
+                    val slateMap = mutableMapOf<String, Pair<Boolean, Long>>()
+                    val slateArr = json.optJSONArray("slateEpisodes")
+                    if (slateArr != null) {
+                        for (i in 0 until slateArr.length()) {
+                            val obj = slateArr.optJSONObject(i) ?: continue
+                            val guid = obj.optString("guid")
+                            val pUrl = obj.optString("podcastUrl")
+                            val inSlate = obj.optBoolean("inSlate", true)
+                            val slateTime = obj.optLong("slateAddedTime", System.currentTimeMillis())
+                            if (guid.isNotEmpty()) {
+                                slateMap[guid] = inSlate to slateTime
+                                if (pUrl.isNotEmpty()) urls.add(pUrl)
+                            }
+                        }
+                    }
+
+                    val allGuids = playedMap.keys + favMap.keys + slateMap.keys
+                    for (guid in allGuids) {
+                        val (played, pos) = playedMap[guid] ?: (false to 0L)
+                        val fav = favMap[guid] ?: false
+                        val (inSlate, slateTime) = slateMap[guid] ?: (false to 0L)
+                        statesToRestore.add(StateToRestore(guid, "", "", played, pos, 0L, fav, inSlate, slateTime))
                     }
                 }
             }
@@ -261,13 +478,17 @@ class Repo(private val ctx: Context) {
             } catch (_: Exception) {}
         }
 
-        playedGuids.forEach { (guid, played) ->
-            if (played) {
-                dao.setPlayed(guid, true)
-                importedPlayed++
+        statesToRestore.forEach { state ->
+            var updated = 0
+            if (state.guid.isNotEmpty()) {
+                updated = dao.restoreStateByGuid(state.guid, state.played, state.positionMs, state.durationMs, state.favorite, state.inSlate, state.slateAddedTime)
             }
+            if (updated == 0 && state.audioUrl.isNotEmpty()) {
+                dao.restoreStateByAudioUrl(state.audioUrl, state.played, state.positionMs, state.durationMs, state.favorite, state.inSlate, state.slateAddedTime)
+            }
+            importedStates++
         }
 
-        importedSubs to importedPlayed
+        importedSubs to importedStates
     }
 }

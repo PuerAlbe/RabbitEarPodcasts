@@ -1,6 +1,8 @@
 package com.example.rabbitear.data
 
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity
@@ -24,7 +26,11 @@ data class Episode(
     val played: Boolean = false,
     val localPath: String? = null,
     val downloadedBySyndication: Boolean = false,
-    val image: String? = null
+    val image: String? = null,
+    val description: String? = null,
+    val favorite: Boolean = false,
+    val inSlate: Boolean = false,
+    val slateAddedTime: Long = 0L
 )
 
 @Dao
@@ -41,14 +47,51 @@ interface RabbitEarDao {
     @Query("SELECT * FROM Episode WHERE podcastUrl=:u ORDER BY pubDate DESC") fun episodes(u: String): Flow<List<Episode>>
     @Query("SELECT * FROM Episode WHERE guid=:g") suspend fun episode(g: String): Episode?
     @Query("SELECT * FROM Episode WHERE played = 1 OR positionMs > 0") suspend fun playedEpisodesNow(): List<Episode>
+    @Query("SELECT * FROM Episode WHERE played = 1 OR positionMs > 0 OR favorite = 1 OR inSlate = 1") suspend fun allEpisodeStatesNow(): List<Episode>
+    @Query("SELECT * FROM Episode WHERE favorite = 1 ORDER BY pubDate DESC") fun favoriteEpisodes(): Flow<List<Episode>>
+    @Query("SELECT * FROM Episode WHERE favorite = 1 ORDER BY pubDate DESC") suspend fun favoriteEpisodesNow(): List<Episode>
+    @Query("SELECT * FROM Episode WHERE inSlate = 1 ORDER BY slateAddedTime ASC") fun slateEpisodes(): Flow<List<Episode>>
+    @Query("SELECT * FROM Episode WHERE inSlate = 1 ORDER BY slateAddedTime ASC") suspend fun slateEpisodesNow(): List<Episode>
     @Query("SELECT * FROM Episode WHERE podcastUrl=:u AND played=0 ORDER BY pubDate ASC LIMIT 1") suspend fun oldestUnplayed(u: String): Episode?
     @Query("SELECT * FROM Episode WHERE podcastUrl=:u AND played=0 ORDER BY pubDate DESC LIMIT 1") suspend fun newestUnplayed(u: String): Episode?
+    @Query("SELECT * FROM Episode WHERE podcastUrl=:u AND played=0 ORDER BY pubDate ASC LIMIT 1 OFFSET :offset") suspend fun oldestUnplayedWithOffset(u: String, offset: Int): Episode?
+    @Query("SELECT * FROM Episode WHERE podcastUrl=:u AND played=0 ORDER BY pubDate DESC LIMIT 1 OFFSET :offset") suspend fun newestUnplayedWithOffset(u: String, offset: Int): Episode?
+    @Query("SELECT * FROM Episode WHERE podcastUrl=:u ORDER BY pubDate DESC LIMIT 1") suspend fun newestEpisode(u: String): Episode?
     @Query("UPDATE Episode SET positionMs=:pos, durationMs=CASE WHEN :dur>0 THEN :dur ELSE durationMs END WHERE guid=:g")
     suspend fun progress(g: String, pos: Long, dur: Long)
     @Query("UPDATE Episode SET played=:v, positionMs=0 WHERE guid=:g") suspend fun setPlayed(g: String, v: Boolean)
+    @Query("UPDATE Episode SET favorite=:v WHERE guid=:g") suspend fun setFavorite(g: String, v: Boolean)
+    @Query("UPDATE Episode SET inSlate=:inSlate, slateAddedTime=:addedTime WHERE guid=:g") suspend fun setInSlate(g: String, inSlate: Boolean, addedTime: Long = System.currentTimeMillis())
     @Query("UPDATE Episode SET localPath=:path, downloadedBySyndication=:bySyndication WHERE guid=:g")
     suspend fun setLocal(g: String, path: String?, bySyndication: Boolean = false)
+
+    @Query("UPDATE Episode SET played=:played, positionMs=:pos, durationMs=CASE WHEN :dur>0 THEN :dur ELSE durationMs END, favorite=:fav, inSlate=:inSlate, slateAddedTime=:addedTime WHERE guid=:g")
+    suspend fun restoreStateByGuid(g: String, played: Boolean, pos: Long, dur: Long, fav: Boolean, inSlate: Boolean, addedTime: Long): Int
+
+    @Query("UPDATE Episode SET played=:played, positionMs=:pos, durationMs=CASE WHEN :dur>0 THEN :dur ELSE durationMs END, favorite=:fav, inSlate=:inSlate, slateAddedTime=:addedTime WHERE audioUrl=:url")
+    suspend fun restoreStateByAudioUrl(url: String, played: Boolean, pos: Long, dur: Long, fav: Boolean, inSlate: Boolean, addedTime: Long): Int
 }
 
-@Database(entities = [Podcast::class, Episode::class], version = 3, exportSchema = false)
+val MIGRATION_1_2 = object : Migration(1, 2) { override fun migrate(db: SupportSQLiteDatabase) {} }
+val MIGRATION_2_3 = object : Migration(2, 3) { override fun migrate(db: SupportSQLiteDatabase) {} }
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        try { db.execSQL("ALTER TABLE Episode ADD COLUMN description TEXT DEFAULT NULL") } catch (_: Exception) {}
+    }
+}
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        try { db.execSQL("ALTER TABLE Episode ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0") } catch (_: Exception) {}
+    }
+}
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        try {
+            db.execSQL("ALTER TABLE Episode ADD COLUMN inSlate INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE Episode ADD COLUMN slateAddedTime INTEGER NOT NULL DEFAULT 0")
+        } catch (_: Exception) {}
+    }
+}
+
+@Database(entities = [Podcast::class, Episode::class], version = 6, exportSchema = false)
 abstract class Db : RoomDatabase() { abstract fun dao(): RabbitEarDao }

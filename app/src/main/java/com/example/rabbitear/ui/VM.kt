@@ -155,6 +155,26 @@ class VM(app: Application) : AndroidViewModel(app) {
             repo.enqueueDownload(e.guid, bySyndication = false)
         } else viewModelScope.launch { repo.deleteDownload(e) }
     }
+    fun toggleFavorite(e: Episode) {
+        viewModelScope.launch {
+            repo.dao.setFavorite(e.guid, !e.favorite)
+        }
+    }
+    fun toggleSlate(e: Episode) {
+        viewModelScope.launch {
+            repo.dao.setInSlate(e.guid, !e.inSlate, System.currentTimeMillis())
+        }
+    }
+    fun currentMediaId(): String? = c?.currentMediaItem?.mediaId
+    fun toggleFavoriteCurrent() {
+        val guid = currentMediaId() ?: return
+        viewModelScope.launch {
+            val ep = repo.dao.episode(guid)
+            if (ep != null) {
+                repo.dao.setFavorite(ep.guid, !ep.favorite)
+            }
+        }
+    }
 
     private fun cancelSleepTimerInternal() {
         sleepTimerJob?.cancel()
