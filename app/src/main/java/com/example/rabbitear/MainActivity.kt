@@ -25,9 +25,6 @@ class MainActivity : ComponentActivity() {
 
         val permissionsToRequest = mutableListOf<String>()
 
-        // Audio permissions
-        permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
-
         // Bluetooth permissions (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT)

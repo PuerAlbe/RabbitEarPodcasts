@@ -23,6 +23,11 @@ import java.util.concurrent.TimeUnit
 
 enum class Mode { OLDEST, NEWEST }
 
+data class SearchResults(
+    val podcasts: List<Podcast>,
+    val episodes: List<Pair<Podcast, Episode>>
+)
+
 data class StateToRestore(
     val guid: String,
     val podcastUrl: String,
@@ -37,7 +42,7 @@ data class StateToRestore(
 
 class Repo(private val ctx: Context) {
     val dao = Room.databaseBuilder(ctx, Db::class.java, "rabbitear.db")
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
         .fallbackToDestructiveMigration()
         .build().dao()
     val http = OkHttpClient()
@@ -73,6 +78,76 @@ class Repo(private val ctx: Context) {
                 }.distinctBy { it.feedUrl }
             }
         } catch (_: Exception) { emptyList() }
+    }
+
+    suspend fun deepSearch(q: String): SearchResults = withContext(Dispatchers.IO) {
+        val query = q.trim()
+        if (query.isEmpty()) return@withContext SearchResults(emptyList(), emptyList())
+
+        val lowerQuery = query.lowercase(java.util.Locale.US)
+
+        // 1. Fetch iTunes online results & RSS direct feed if URL
+        val onlinePods = mutableListOf<Podcast>()
+        try {
+            if (query.startsWith("http", ignoreCase = true)) {
+                try {
+                    http.newCall(Request.Builder().url(query).build()).execute().use { r ->
+                        val body = r.body
+                        if (r.isSuccessful && body != null) {
+                            val p = parseFeed(query, body.byteStream()).first
+                            if (p.title.isNotEmpty()) onlinePods.add(p)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            val url = "https://itunes.apple.com/search".toHttpUrl().newBuilder()
+                .addQueryParameter("media", "podcast").addQueryParameter("limit", "30").addQueryParameter("term", query).build()
+            http.newCall(Request.Builder().url(url).build()).execute().use { r ->
+                val body = r.body
+                if (r.isSuccessful && body != null) {
+                    val arr = JSONObject(body.string()).optJSONArray("results") ?: JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val f = o.optString("feedUrl")
+                        if (f.isNotEmpty()) {
+                            onlinePods.add(Podcast(f, o.optString("collectionName"), o.optString("artistName"), o.optString("artworkUrl600")))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. Subscribed & Cached Podcasts
+        val subs = dao.subscriptionsNow()
+        val allPods = (subs + onlinePods).distinctBy { it.feedUrl }
+
+        // Rank Podcasts: Title > Author
+        val rankedPodcasts = allPods.map { p ->
+            var score = 0
+            val titleLower = p.title.lowercase(java.util.Locale.US)
+            val authorLower = p.author.lowercase(java.util.Locale.US)
+
+            if (titleLower == lowerQuery) score += 200
+            else if (titleLower.startsWith(lowerQuery)) score += 150
+            else if (titleLower.contains(lowerQuery)) score += 100
+
+            if (authorLower.contains(lowerQuery)) score += 80
+
+            p to score
+        }.filter { it.second > 0 }
+            .sortedByDescending { it.second }
+            .map { it.first }
+
+        // 3. Search Episodes across local database
+        val matchingEps = dao.searchEpisodes(query)
+        val episodePairs = matchingEps.mapNotNull { ep ->
+            val pod = dao.podcast(ep.podcastUrl)
+                ?: Podcast(ep.podcastUrl, ep.podcastUrl.substringAfter("://").substringBefore("/"), "", ep.image ?: "")
+            pod to ep
+        }
+
+        SearchResults(rankedPodcasts, episodePairs)
     }
 
     suspend fun refresh(feedUrl: String) = withContext(Dispatchers.IO) {
@@ -215,6 +290,54 @@ class Repo(private val ctx: Context) {
     fun setSleepTimerMinutes(minutes: Int) {
         val bounded = minutes.coerceIn(0, 60)
         prefs.edit { putInt("sleepTimerMinutes", bounded) }
+    }
+
+    // ---------- Network & Data location settings ----------
+    fun wifiEnabled(): Boolean = prefs.getBoolean("wifiEnabled", true)
+    fun setWifiEnabled(v: Boolean) = prefs.edit { putBoolean("wifiEnabled", v) }
+
+    fun mobileDataEnabled(): Boolean = prefs.getBoolean("mobileDataEnabled", true)
+    fun setMobileDataEnabled(v: Boolean) = prefs.edit { putBoolean("mobileDataEnabled", v) }
+
+    fun dataDirectoryPath(): String {
+        val custom = prefs.getString("dataDir", null)
+        if (!custom.isNullOrEmpty()) return custom
+        val docsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+        return File(docsDir, "RabbitEarData").path
+    }
+
+    fun setDataDirectoryPath(path: String) {
+        prefs.edit { putString("dataDir", path) }
+    }
+
+    fun lastPlayedGuid(): String? = prefs.getString("lastPlayedGuid", null)
+    fun setLastPlayedGuid(guid: String?) = prefs.edit { if (guid == null) remove("lastPlayedGuid") else putString("lastPlayedGuid", guid) }
+
+    // ---------- Voice Boost & Audio Normalization ----------
+    fun voiceBoostEnabled(): Boolean = prefs.getBoolean("voiceBoostEnabled", false)
+    fun setVoiceBoostEnabled(v: Boolean) = prefs.edit { putBoolean("voiceBoostEnabled", v) }
+
+    fun audioNormalizationEnabled(): Boolean = prefs.getBoolean("audioNormalizationEnabled", false)
+    fun setAudioNormalizationEnabled(v: Boolean) = prefs.edit { putBoolean("audioNormalizationEnabled", v) }
+
+    // ---------- Vehicle & Automotive settings ----------
+    fun autoPlayInVehicle(): Boolean = prefs.getBoolean("autoPlayInVehicle", false)
+    fun setAutoPlayInVehicle(v: Boolean) = prefs.edit { putBoolean("autoPlayInVehicle", v) }
+
+    // ---------- Profiles ----------
+    suspend fun getProfileForPodcast(podcastUrl: String?): PodcastProfile = withContext(Dispatchers.IO) {
+        if (podcastUrl != null) {
+            val podProfile = dao.profile(podcastUrl)
+            if (podProfile != null && podProfile.enabled) {
+                return@withContext podProfile
+            }
+        }
+        val global = dao.profile("GLOBAL")
+        return@withContext global ?: PodcastProfile(feedUrl = "GLOBAL", speed = 1.0f, skipIntroSec = 0, skipOutroSec = 0, enabled = true)
+    }
+
+    suspend fun saveProfile(p: PodcastProfile) = withContext(Dispatchers.IO) {
+        dao.saveProfile(p)
     }
 
     fun updateRefreshSchedule(ctx: Context, hours: Int) {
@@ -490,5 +613,92 @@ class Repo(private val ctx: Context) {
         }
 
         importedSubs to importedStates
+    }
+
+    fun getBackupDirectory(c: Context = ctx): File {
+        val path = dataDirectoryPath()
+        val targetDir = File(path).apply { mkdirs() }
+        return if (targetDir.exists() && targetDir.canWrite()) targetDir else c.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: c.filesDir
+    }
+
+    suspend fun autoBackupAllFormats(c: Context = ctx) = withContext(Dispatchers.IO) {
+        try {
+            val dir = getBackupDirectory(c)
+            File(dir, "rabbitear_settings.json").outputStream().use { exportSettings(it) }
+            File(dir, "rabbitear_subscriptions.opml").outputStream().use { exportOpml(it) }
+            File(dir, "rabbitear_library.html").outputStream().use { exportHtml(it) }
+            exportDatabaseDirect(c)
+        } catch (_: Exception) {}
+    }
+
+    suspend fun exportOpml(out: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        val subs = dao.subscriptionsNow()
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<opml version=\"2.0\">\n")
+        sb.append("  <head>\n    <title>RabbitEar Subscriptions</title>\n  </head>\n")
+        sb.append("  <body>\n")
+        subs.forEach { p ->
+            val title = p.title.replace("&", "&amp;").replace("<", "&lt;").replace("\"", "&quot;")
+            val url = p.feedUrl.replace("&", "&amp;").replace("<", "&lt;").replace("\"", "&quot;")
+            sb.append("    <outline type=\"rss\" xmlUrl=\"$url\" text=\"$title\" title=\"$title\"/>\n")
+        }
+        sb.append("  </body>\n")
+        sb.append("</opml>\n")
+        out.use { it.write(sb.toString().toByteArray(Charsets.UTF_8)) }
+    }
+
+    suspend fun importOpml(input: java.io.InputStream): Int = withContext(Dispatchers.IO) {
+        val xml = input.use { it.bufferedReader(Charsets.UTF_8).readText() }
+        val xmlUrlRegex = Regex("""xmlUrl=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        val urls = xmlUrlRegex.findAll(xml).map { it.groupValues[1] }.distinct().toList()
+        var imported = 0
+        urls.forEach { feedUrl ->
+            try {
+                http.newCall(Request.Builder().url(feedUrl).build()).execute().use { r ->
+                    val body = r.body
+                    if (r.isSuccessful && body != null) {
+                        val (p, eps) = parseFeed(feedUrl, body.byteStream())
+                        dao.addPodcast(p.copy(subscribed = true))
+                        dao.insertEpisodes(eps)
+                        dao.setSubscribed(feedUrl, true)
+                        imported++
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        imported
+    }
+
+    suspend fun exportHtml(out: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        val subs = dao.subscriptionsNow()
+        val episodes = dao.allEpisodeStatesNow()
+        val sb = StringBuilder()
+        sb.append("<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>RabbitEar Podcast Library</title>")
+        sb.append("<style>body{font-family:monospace;background:#14100c;color:#ebdbb2;padding:20px;}")
+        sb.append(".card{background:#262019;border:1px solid #4a3f31;border-left:3px solid #fe8019;padding:12px;margin-bottom:10px;border-radius:8px;}")
+        sb.append("h1{color:#fe8019;}h3{margin:0 0 6px 0;color:#ebdbb2;}a{color:#fe8019;text-decoration:none;}</style></head><body>")
+        sb.append("<h1>RabbitEar Podcast Library</h1>")
+        sb.append("<h2>Subscriptions (${subs.size})</h2>")
+        subs.forEach { p ->
+            sb.append("<div class=\"card\"><h3>${p.title}</h3><p>Author: ${p.author}</p><p>RSS: <a href=\"${p.feedUrl}\">${p.feedUrl}</a></p></div>")
+        }
+        sb.append("<h2>Saved & Listened Episodes (${episodes.size})</h2>")
+        episodes.forEach { e ->
+            sb.append("<div class=\"card\"><h3>${e.title}</h3><p>Played: ${e.played} | Favorite: ${e.favorite} | Slate: ${e.inSlate}</p></div>")
+        }
+        sb.append("</body></html>")
+        out.use { it.write(sb.toString().toByteArray(Charsets.UTF_8)) }
+    }
+
+    suspend fun exportDatabaseDirect(c: Context = ctx): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val dbFile = c.getDatabasePath("rabbitear.db")
+            if (dbFile.exists()) {
+                val backupFile = File(getBackupDirectory(c), "rabbitear_backup.db")
+                dbFile.inputStream().use { input -> backupFile.outputStream().use { input.copyTo(it) } }
+                true
+            } else false
+        } catch (_: Exception) { false }
     }
 }

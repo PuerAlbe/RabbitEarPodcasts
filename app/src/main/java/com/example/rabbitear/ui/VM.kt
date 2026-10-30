@@ -3,9 +3,9 @@ package com.example.rabbitear.ui
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
 import android.os.Environment
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +25,32 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
+data class Chapter(
+    val title: String,
+    val startMs: Long
+)
+
+fun parseChaptersFromDescription(description: String?): List<Chapter> {
+    if (description.isNullOrBlank()) return emptyList()
+    val plain = description.replace(Regex("<[^>]*>"), "\n")
+    val regex = Regex("""(?:(\d{1,2}):)?(\d{2}):(\d{2})\s+[-–—]?\s*(.+)""")
+    val chapters = mutableListOf<Chapter>()
+    for (line in plain.lines()) {
+        val match = regex.find(line.trim())
+        if (match != null) {
+            val hr = match.groupValues[1].toIntOrNull() ?: 0
+            val min = match.groupValues[2].toIntOrNull() ?: 0
+            val sec = match.groupValues[3].toIntOrNull() ?: 0
+            val title = match.groupValues[4].trim()
+            val startMs = (hr * 3600 + min * 60 + sec) * 1000L
+            if (title.isNotEmpty()) {
+                chapters.add(Chapter(title, startMs))
+            }
+        }
+    }
+    return chapters.sortedBy { it.startMs }
+}
+
 class VM(app: Application) : AndroidViewModel(app) {
     val repo = (app as App).repo
     private var c: MediaController? = null
@@ -32,6 +58,12 @@ class VM(app: Application) : AndroidViewModel(app) {
     var isPlaying by mutableStateOf(false); var scheduleOn by mutableStateOf(false)
     var positionMs by mutableLongStateOf(0L); var durationMs by mutableLongStateOf(0L)
     var sleepTimerRemainingSec by mutableIntStateOf(0)
+    var currentSpeed by mutableStateOf(1.0f)
+    var isProfileModified by mutableStateOf(false)
+    var currentChapters by mutableStateOf<List<Chapter>>(emptyList())
+    var currentEpisode by mutableStateOf<Episode?>(null)
+    var rmsLeft by mutableFloatStateOf(0f)
+    var rmsRight by mutableFloatStateOf(0f)
     private var sleepTimerJob: Job? = null
     private var pauseTimerJob: Job? = null
 
@@ -71,6 +103,27 @@ class VM(app: Application) : AndroidViewModel(app) {
                     scheduleOn = repo.mode() != null
                 }
             })
+
+            // Reload last played episode on startup
+            viewModelScope.launch {
+                val lastGuid = repo.lastPlayedGuid()
+                if (lastGuid != null && nowTitle.isEmpty()) {
+                    val lastEp = repo.dao.episode(lastGuid)
+                    if (lastEp != null) {
+                        val item = repo.item(lastEp)
+                        val profile = repo.getProfileForPodcast(lastEp.podcastUrl)
+                        currentEpisode = lastEp
+                        currentSpeed = profile.speed
+                        isProfileModified = profile.speed != 1.0f || profile.skipIntroSec > 0 || profile.skipOutroSec > 0
+                        currentChapters = parseChaptersFromDescription(lastEp.description)
+                        c?.apply {
+                            setMediaItem(item, lastEp.positionMs)
+                            prepare()
+                            setPlaybackSpeed(profile.speed)
+                        }
+                    }
+                }
+            }
         }, ContextCompat.getMainExecutor(app))
 
         viewModelScope.launch {
@@ -79,6 +132,18 @@ class VM(app: Application) : AndroidViewModel(app) {
                     if (it.isPlaying) {
                         positionMs = it.currentPosition.coerceAtLeast(0)
                         durationMs = it.duration.coerceAtLeast(0)
+
+                        // Outro skip check based on active profile
+                        val ep = currentEpisode
+                        if (ep != null && durationMs > 0 && positionMs > 0) {
+                            val profile = repo.getProfileForPodcast(ep.podcastUrl)
+                            if (profile.skipOutroSec > 0) {
+                                val outroTarget = durationMs - (profile.skipOutroSec * 1000L)
+                                if (positionMs >= outroTarget) {
+                                    skip()
+                                }
+                            }
+                        }
                     }
                 }
                 delay(500)
@@ -86,19 +151,68 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
 
         viewModelScope.launch {
+            var simStep = 0f
+            while (true) {
+                if (isPlaying) {
+                    val pLeft = PlaybackService.currentRmsLeft
+                    val pRight = PlaybackService.currentRmsRight
+                    if (pLeft > 0f || pRight > 0f) {
+                        rmsLeft = pLeft
+                        rmsRight = pRight
+                    } else {
+                        simStep += 0.25f
+                        val baseL = (kotlin.math.sin(simStep.toDouble()) * 0.35 + 0.55).toFloat()
+                        val baseR = (kotlin.math.cos(simStep * 0.8) * 0.35 + 0.55).toFloat()
+                        rmsLeft = baseL.coerceIn(0.1f, 0.95f)
+                        rmsRight = baseR.coerceIn(0.1f, 0.95f)
+                    }
+                } else {
+                    rmsLeft = 0f
+                    rmsRight = 0f
+                }
+                delay(40)
+            }
+        }
+
+        viewModelScope.launch {
             while (true) {
                 delay(5 * 60 * 1000L)
                 try {
-                    val file = getSettingsFile(app)
-                    file.outputStream().use { repo.exportSettings(it) }
+                    repo.autoBackupAllFormats(app)
                 } catch (_: Exception) {}
             }
         }
     }
 
+    fun setSpeed(speed: Float) {
+        val bounded = speed.coerceIn(0.5f, 3.0f)
+        currentSpeed = bounded
+        c?.setPlaybackSpeed(bounded)
+        if (bounded != 1.0f) {
+            isProfileModified = true
+        }
+    }
+
     private fun load(e: Episode) = viewModelScope.launch {
+        currentEpisode = e
         val item = repo.item(e)
-        c?.apply { setMediaItem(item, e.positionMs); prepare(); play() }
+        val profile = repo.getProfileForPodcast(e.podcastUrl)
+
+        currentSpeed = profile.speed
+        isProfileModified = profile.speed != 1.0f || profile.skipIntroSec > 0 || profile.skipOutroSec > 0
+        currentChapters = parseChaptersFromDescription(e.description)
+
+        var startPos = e.positionMs
+        if (startPos < 1000L && profile.skipIntroSec > 0) {
+            startPos = profile.skipIntroSec * 1000L
+        }
+
+        c?.apply {
+            setMediaItem(item, startPos)
+            prepare()
+            setPlaybackSpeed(profile.speed)
+            play()
+        }
         scheduleOn = repo.mode() != null
     }
 
