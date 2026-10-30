@@ -1,53 +1,54 @@
 # RabbitEar 📻
 
-A modern, distraction-free Android podcast player built with Jetpack Compose, Material 3, and Media3 ExoPlayer, featuring automated syndication schedules and a late 1970s Gruvbox retro aesthetic.
+A modern, full-featured Android podcast player built with Jetpack Compose, Material 3, and Media3 ExoPlayer, featuring automated Cereal Mode syndication schedules, Podcasting 2.0 namespace support, real-time RMS vacuum tube level metering, and customizable themes.
 
 ---
 
-## 🌟 Key Features
+## 🌟 Key Features & Capabilities
 
-### 📡 Automated Syndication Schedules
-- **Oldest Mode**: Plays episodes chronologically from beginning to end, rotating across all your subscribed podcasts.
-- **Latest Mode**: Plays the newest episodes working backwards, rotating across all subscribed podcasts.
-- **Isolated Schedule Memory**: Both modes maintain their own independent rotation position and persistence state while sharing played/progress data.
-- **Background Downloads**: WorkManager automatically pre-downloads upcoming syndicated episodes for offline listening.
+### 🥣 Cereal Mode Syndication Schedules
+- **Oldest Mode**: Plays episodes chronologically from backlog to end, rotating across all subscribed podcasts. For serial shows (`itunes:episodeType="serial"`), respects season and episode ordering.
+- **Latest Mode**: Plays the newest episode drops working backwards across subscribed feeds.
+- **New Drop Sewing**: Periodically sews newly released episodes into Oldest backlog rotation without breaking chronological backlog continuity.
+- **Coming Up Preview**: Displays a live preview card on `Home` of upcoming scheduled episodes in rotation.
 
-### 🎧 Fullscreen Player & Playback Control
-- **Expandable Fullscreen Player**: Displays high-resolution episode artwork (or channel artwork fallback), episode title, and show details.
-- **Playback Controls**: Play, Pause, Replay 30s, Forward 30s, and Next Episode buttons.
-- **Progress Tracking**: Interactive seek bar with exact timestamps; position progress is saved to the local database upon play/pause and background intervals.
-- **Background Service**: Built on Jetpack Media3 (`MediaSessionService`) with system notifications and audio focus handling.
+### 📜 Slate Queue & Reruns
+- **Slate Queue**: Dedicated priority queue with drag-to-reorder, "Play Next", "Add to End", and "Clear Played" actions.
+- **Reruns**: Save favorite episodes for re-listening.
 
-### ⏱️ In-Memory Sleep Timer
-- **Quick Setup**: Set a sleep timer up to 60 minutes using a numeric keypad interface.
-- **Dynamic Badge**: Replaces the top-bar timer button with a live badge showing remaining minutes/seconds.
-- **In-Memory Lifetime**: Resets to zero when paused or closed — never persisted across sessions.
+### 🎙️ Podcasting 2.0 Namespace & Transcripts
+- **Podcasting 2.0 Tags**: Supports `<podcast:guid>`, `<podcast:funding>`, `<podcast:transcript>`, `<podcast:chapters>`, `<podcast:person>`, and `<podcast:location>`.
+- **Native Transcripts**: Parses WebVTT, SRT, and TXT transcripts with active line highlighting during playback. Tapping any line seeks playback directly.
+- **Exhaustive Artwork Resolver**: Multi-level fallback resolution chain trying feed/episode iTunes images, RSS `<image>`, media thumbnails, enclosures, and OpenGraph HTML scraping.
 
-### 🔍 Independent Search & Discovery
-- **iTunes Directory & Direct RSS**: Search for podcasts via iTunes directory or by pasting direct RSS feed URLs.
-- **Standalone Navigation**: Search page remains active with query results intact when navigating to episode details and back.
+### 🎛️ Audio Processing & Stereo VU Metering
+- **Real-Time RMS Vacuum Tube Meter**: Built-in 12-segment stereo level meter with decaying ghost trails and 3D glowing vacuum tube filaments, driven by 16-bit/Float PCM RMS audio sampling.
+- **Voice Boost & Normalization**: Integrated `LoudnessEnhancer` audio processing for speech frequency enhancement and volume spike smoothing.
+- **Configurable Skip Intervals & Skip Silence**: Configurable back/forward skip increments and silence skipping.
 
-### 💾 Backup & Restore
-- **Direct Backup**: Single-tap export and import of all subscriptions and played episode states to `Documents/rabbitear_settings.json`.
-- **Auto-Backup**: Automatically backs up settings to the `Documents` directory every 5 minutes in the background.
+### 💾 Backup, Restore & Storage Access Framework (SAF)
+- **SAF Storage Folder Picker**: Native Android directory chooser (`OpenDocumentTree`) for storage selection.
+- **Multi-Format Backup**: Exports and auto-backs up JSON, OPML, HTML library catalog, and SQLite database files to `RabbitEarData`.
+- **Atomic Import**: Instant state restoration for subscriptions and progress.
 
-### 🎨 Retro 1970s Gruvbox Aesthetic
-- Styled in a late 1970s **Gruvbox** palette featuring warm creams, deep vintage oranges, forest greens, and dark charcoal surfaces.
+### 🎨 Themes & Design Tokens
+- **Material You Dynamic Colors**: Supports Android 12+ dynamic color schemes with dark/light fallbacks.
+- **Selectable Themes**: System Dynamic, Gruvbox Retro, Material Light, and Material Dark.
 
 ---
 
 ## 🛠️ Tech Stack & Architecture
 
-- **Language**: Kotlin
+- **Package Name**: `com.rabbitear.app`
+- **Language & Gradle**: Kotlin 2.0.21, Gradle Version Catalog (`libs.versions.toml`), AGP 8.7.3
 - **UI Framework**: Jetpack Compose, Material 3, Material Icons Extended
-- **Audio Engine**: Jetpack Media3 ExoPlayer & MediaSessionService
-- **Database**: Room Database with Coroutines Flow
-- **Background Tasks**: AndroidX WorkManager & Coroutines
-- **Image Loading**: Coil
-- **Network**: OkHttp3 & iTunes Search API
+- **Audio Engine**: Jetpack Media3 (`MediaLibraryService`, `ExoPlayer`, `ForwardingPlayer`)
+- **Database**: Room Database (Schema Export v10 with tested migrations)
+- **Background Work**: WorkManager (Conditional GET feed refreshes, background downloads, daily backups)
+- **Networking & Image**: OkHttp3 (User-Agent header, 50MB HTTP disk cache) & Coil
 
 ---
 
 ## 📄 License
 
-RabbitEar is free and open-source software released under the **[GNU General Public License v3.0 (GPLv3)](LICENSE)**.
+RabbitEar is free and open-source software released under the **GNU General Public License v3.0 (GPLv3)**.

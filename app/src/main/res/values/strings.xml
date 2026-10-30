@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RabbitEar</string>
+    <string name="brand_title_rab">Rab</string>
+    <string name="brand_title_bitear">bitEar</string>
+    <string name="brand_tagline">CEREAL MODE</string>
+
+    <!-- Navigation & Titles -->
+    <string name="title_home">Home</string>
+    <string name="title_subscriptions">Subscriptions</string>
+    <string name="title_slate">Slate</string>
+    <string name="title_reruns">Reruns</string>
+    <string name="title_latest_episodes">Latest Episodes</string>
+    <string name="title_search">Search</string>
+    <string name="title_settings">Settings</string>
+    <string name="title_permissions">Permissions</string>
+    <string name="title_help">RabbitEar User Guide</string>
+
+    <!-- Controls & Actions -->
+    <string name="action_back">Back</string>
+    <string name="action_close">Close</string>
+    <string name="action_search">Search</string>
+    <string name="action_settings">Settings &amp; Toolbox</string>
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_play_pause">Play or Pause</string>
+    <string name="action_skip_next">Next episode</string>
+    <string name="action_skip_back_30">Skip back 30 seconds</string>
+    <string name="action_skip_forward_30">Skip forward 30 seconds</string>
+    <string name="action_favorite_add">Add to Reruns</string>
+    <string name="action_favorite_remove">Remove from Reruns</string>
+    <string name="action_slate_add">Add to Slate</string>
+    <string name="action_slate_remove">Remove from Slate</string>
+    <string name="action_download">Download episode</string>
+    <string name="action_delete_download">Delete downloaded episode</string>
+    <string name="action_mark_played">Mark as played</string>
+    <string name="action_mark_unplayed">Mark as unplayed</string>
+    <string name="action_random">Random Episode</string>
+    <string name="action_subscribe">Subscribe</string>
+    <string name="action_subscribed">Subscribed</string>
+    <string name="action_donate">Donate</string>
+    <string name="action_export_all">Export All</string>
+    <string name="action_import">Import</string>
+
+    <!-- Mode & Settings -->
+    <string name="cereal_mode_header">CEREAL MODE</string>
+    <string name="mode_oldest">Oldest</string>
+    <string name="mode_latest">Latest</string>
+    <string name="library_header">LIBRARY</string>
+    <string name="section_latest_subtitle">Newest drop from every feed</string>
+    <string name="section_slate_empty">Queue empty</string>
+    <string name="section_reruns_empty">No reruns saved</string>
+
+    <!-- Theme & Storage Settings -->
+    <string name="setting_theme">Theme</string>
+    <string name="theme_system">System Dynamic</string>
+    <string name="theme_gruvbox">Gruvbox Retro</string>
+    <string name="theme_light">Material Light</string>
+    <string name="theme_dark">Material Dark</string>
+
+    <!-- Audio & Network -->
+    <string name="setting_check_episodes">Check for new episodes</string>
+    <string name="setting_wifi">WiFi</string>
+    <string name="setting_mobile_data">Mobile Data</string>
+    <string name="setting_off_grid">OFF GRID</string>
+    <string name="setting_sleep_timer">Sleep Timer</string>
+    <string name="setting_global_profile">Global Playback Profile</string>
+    <string name="setting_data_folder">Data Storage Folder</string>
+    <string name="setting_voice_boost">Voice Boost</string>
+    <string name="setting_audio_normalization">Audio Level Normalization</string>
+
+    <!-- Plurals & Formatting -->
+    <plurals name="feeds_count">
+        <item quantity="one">%d feed</item>
+        <item quantity="other">%d feeds</item>
+    </plurals>
+    <plurals name="episodes_count">
+        <item quantity="one">%d episode</item>
+        <item quantity="other">%d episodes</item>
+    </plurals>
+</resources>
